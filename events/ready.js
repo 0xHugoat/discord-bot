@@ -7,7 +7,7 @@ module.exports = {
 
     // Statut personnalisé du bot
     client.user.setPresence({
-      activities: [{ name: '🎮 /help pour m\'utiliser', type: 0 }],
+      //activities: [{ name: '🎮 /help pour m\'utiliser', type: 0 }],
       status: 'online',
     });
   },
