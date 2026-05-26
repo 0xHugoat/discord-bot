@@ -366,8 +366,15 @@ module.exports = {
         const botMember = interaction.guild.members.me;
         const botPermissions = logsChannel.permissionsFor(botMember);
 
-        if (!botPermissions?.has(PermissionFlagsBits.ViewChannel) || !botPermissions?.has(PermissionFlagsBits.SendMessages)) {
-          return interaction.editReply('Impossible de fermer: je n ai pas la permission d envoyer le transcript dans le salon transcripts.');
+        const missingPermissions = [];
+
+        if (!botPermissions?.has(PermissionFlagsBits.ViewChannel)) missingPermissions.push('Voir le salon');
+        if (!botPermissions?.has(PermissionFlagsBits.SendMessages)) missingPermissions.push('Envoyer des messages');
+        if (!botPermissions?.has(PermissionFlagsBits.AttachFiles)) missingPermissions.push('Joindre des fichiers');
+        if (!botPermissions?.has(PermissionFlagsBits.EmbedLinks)) missingPermissions.push('Integrer des liens');
+
+        if (missingPermissions.length > 0) {
+          return interaction.editReply(`Impossible de fermer: il me manque dans le salon transcripts: ${missingPermissions.join(', ')}.`);
         }
 
         const transcript = await createTranscript(interaction.channel, meta, interaction.user);
@@ -394,7 +401,7 @@ module.exports = {
         }, 5000);
       } catch (err) {
         console.error('Erreur fermeture ticket:', err);
-        await interaction.editReply('Erreur pendant la fermeture du ticket. Verifie mes permissions puis reessaie.');
+        await interaction.editReply(`Erreur pendant la fermeture du ticket: ${err.message || 'erreur inconnue'}`);
       }
     }
   },
