@@ -38,19 +38,25 @@ const TICKET_TYPES = {
   },
 };
 
-function buildPanel(staffRole, transcriptChannel) {
+const TICKET_ROLE_NAME = 'ticket';
+
+function findTicketRole(guild) {
+  return guild.roles.cache.find(role => role.name.toLowerCase() === TICKET_ROLE_NAME);
+}
+
+function buildPanel(ticketRole, transcriptChannel) {
   const embed = new EmbedBuilder()
     .setColor(0x5865F2)
     .setTitle('Support tickets')
     .setDescription('Choisis le type de ticket dont tu as besoin dans le menu ci-dessous.')
     .addFields(
-      { name: 'Staff', value: `${staffRole}`, inline: true },
+      { name: 'Role tickets', value: `${ticketRole}`, inline: true },
       { name: 'Transcripts', value: `${transcriptChannel}`, inline: true },
     )
     .setTimestamp();
 
   const menu = new StringSelectMenuBuilder()
-    .setCustomId(`ticket_type_select:${staffRole.id}:${transcriptChannel.id}`)
+    .setCustomId(`ticket_type_select:${transcriptChannel.id}`)
     .setPlaceholder('Choisis un type de ticket...')
     .addOptions(
       Object.entries(TICKET_TYPES).map(([value, type]) => ({
@@ -110,14 +116,14 @@ function buildTicketTopic(meta) {
     'ticket',
     `user:${meta.user}`,
     `type:${meta.type}`,
-    `staff:${meta.staff}`,
+    `role:${meta.role}`,
     `logs:${meta.logs}`,
     meta.claimed ? `claimed:${meta.claimed}` : null,
   ].filter(Boolean).join(' | ');
 }
 
-function isStaffMember(member, staffRoleId) {
-  return member.roles.cache.has(staffRoleId) || member.permissions.has(PermissionFlagsBits.ManageChannels);
+function canManageTicket(member, ticketRoleId) {
+  return member.roles.cache.has(ticketRoleId) || member.permissions.has(PermissionFlagsBits.ManageChannels);
 }
 
 async function fetchAllMessages(channel) {
@@ -168,12 +174,6 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('ticket-panel')
     .setDescription('Cree un panel de tickets dans ce salon')
-    .addRoleOption(option =>
-      option
-        .setName('staff')
-        .setDescription('Role qui pourra voir, claim et close les tickets')
-        .setRequired(true),
-    )
     .addChannelOption(option =>
       option
         .setName('transcripts')
@@ -191,16 +191,23 @@ module.exports = {
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   async execute(interaction) {
-    const staffRole = interaction.options.getRole('staff');
     const transcriptChannel = interaction.options.getChannel('transcripts');
     const category = interaction.options.getChannel('categorie');
+    const ticketRole = findTicketRole(interaction.guild);
 
-    const panel = buildPanel(staffRole, transcriptChannel);
+    if (!ticketRole) {
+      return interaction.reply({
+        content: `Cree d abord un role Discord nomme exactement "${TICKET_ROLE_NAME}", puis relance la commande.`,
+        ephemeral: true,
+      });
+    }
+
+    const panel = buildPanel(ticketRole, transcriptChannel);
     const message = await interaction.channel.send(panel);
 
     if (category) {
       const menu = StringSelectMenuBuilder.from(message.components[0].components[0])
-        .setCustomId(`ticket_type_select:${staffRole.id}:${transcriptChannel.id}:${category.id}`);
+        .setCustomId(`ticket_type_select:${transcriptChannel.id}:${category.id}`);
       await message.edit({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
@@ -208,11 +215,18 @@ module.exports = {
   },
 
   async handleSelect(interaction) {
-    const [, staffRoleId, transcriptChannelId, categoryId] = interaction.customId.split(':');
+    const [, transcriptChannelId, categoryId] = interaction.customId.split(':');
     const typeKey = interaction.values[0];
     const type = TICKET_TYPES[typeKey] || TICKET_TYPES.autre;
     const guild = interaction.guild;
-    const member = interaction.member;
+    const ticketRole = findTicketRole(guild);
+
+    if (!ticketRole) {
+      return interaction.reply({
+        content: `Le role "${TICKET_ROLE_NAME}" est introuvable. Cree ce role puis reessaie.`,
+        ephemeral: true,
+      });
+    }
 
     const existingTicket = guild.channels.cache.find(channel =>
       channel.type === ChannelType.GuildText &&
@@ -235,7 +249,7 @@ module.exports = {
       topic: buildTicketTopic({
         user: interaction.user.id,
         type: typeKey,
-        staff: staffRoleId,
+        role: ticketRole.id,
         logs: transcriptChannelId,
       }),
       permissionOverwrites: [
@@ -253,7 +267,7 @@ module.exports = {
           ],
         },
         {
-          id: staffRoleId,
+          id: ticketRole.id,
           allow: [
             PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.SendMessages,
@@ -278,7 +292,7 @@ module.exports = {
     const embed = new EmbedBuilder()
       .setColor(0x57F287)
       .setTitle(`${type.emoji} Ticket ${type.label}`)
-      .setDescription(`${interaction.user}, explique ta demande ici. Un membre du staff va te repondre.`)
+      .setDescription(`${interaction.user}, explique ta demande ici. Un membre avec le role ticket va te repondre.`)
       .addFields(
         { name: 'Type', value: type.label, inline: true },
         { name: 'Statut', value: 'En attente de claim', inline: true },
@@ -286,7 +300,7 @@ module.exports = {
       .setTimestamp();
 
     await ticketChannel.send({
-      content: `${interaction.user} <@&${staffRoleId}>`,
+      content: `${interaction.user} ${ticketRole}`,
       embeds: [embed],
       components: buildTicketControls(),
     });
@@ -299,24 +313,25 @@ module.exports = {
 
   async handleButton(interaction) {
     const meta = getTicketMeta(interaction.channel);
+    const ticketRoleId = meta.role || meta.staff;
 
-    if (!meta.user || !meta.staff || !meta.logs) {
+    if (!meta.user || !ticketRoleId || !meta.logs) {
       return interaction.reply({ content: 'Ce salon ne ressemble pas a un ticket valide.', ephemeral: true });
     }
 
     const isTicketOwner = interaction.user.id === meta.user;
-    const isStaff = isStaffMember(interaction.member, meta.staff);
+    const canManage = canManageTicket(interaction.member, ticketRoleId);
 
     if (interaction.customId === 'ticket_claim') {
-      if (!isStaff) {
-        return interaction.reply({ content: 'Seul le staff peut claim ce ticket.', ephemeral: true });
+      if (!canManage) {
+        return interaction.reply({ content: 'Il faut le role ticket pour claim ce ticket.', ephemeral: true });
       }
 
       if (meta.claimed) {
         return interaction.reply({ content: `Ce ticket est deja claim par <@${meta.claimed}>.`, ephemeral: true });
       }
 
-      const updatedMeta = { ...meta, claimed: interaction.user.id };
+      const updatedMeta = { ...meta, role: ticketRoleId, claimed: interaction.user.id };
       await interaction.channel.setTopic(buildTicketTopic(updatedMeta));
 
       const embed = EmbedBuilder.from(interaction.message.embeds[0])
@@ -335,7 +350,7 @@ module.exports = {
     }
 
     if (interaction.customId === 'ticket_close') {
-      if (!isStaff && !isTicketOwner) {
+      if (!canManage && !isTicketOwner) {
         return interaction.reply({ content: 'Tu ne peux pas fermer ce ticket.', ephemeral: true });
       }
 
