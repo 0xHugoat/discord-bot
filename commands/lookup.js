@@ -94,7 +94,32 @@ async function runWhois(domain) {
   }
 }
  
+function isPrivateIP(ip) {
+  return (
+    /^10\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    /^127\./.test(ip) ||
+    /^169\.254\./.test(ip) ||
+    ip === '::1' ||
+    ip === 'localhost'
+  );
+}
+ 
 async function runIP(ip) {
+  if (isPrivateIP(ip)) {
+    return new EmbedBuilder()
+      .setColor(0xFFA500)
+      .setTitle(`📍 IP Lookup — ${ip}`)
+      .setDescription('⚠️ **Cette adresse est une IP privée (réseau local).**\nElle n\'est pas localisable sur internet.\n\nLes IPs privées sont utilisées uniquement en réseau local (ta box, ton PC, ta VM...).')
+      .addFields(
+        { name: '🔒 Type', value: 'IP Privée / Locale', inline: true },
+        { name: '🌐 Localisable ?', value: 'Non', inline: true },
+      )
+      .setTimestamp()
+      .setFooter({ text: 'OSINT Lookup' });
+  }
+ 
   try {
     const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,regionName,city,zip,isp,org,as,timezone,query&lang=fr`, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
