@@ -29,6 +29,18 @@ module.exports = {
       return;
     }
 
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('ticket_type_select:')) {
+      const tickets = client.commands.get('ticket-panel');
+      if (tickets) await tickets.handleSelect(interaction);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('ticket_')) {
+      const tickets = client.commands.get('ticket-panel');
+      if (tickets) await tickets.handleButton(interaction);
+      return;
+    }
+
     // Modal OSINT
     if (interaction.isModalSubmit() && interaction.customId.startsWith('osint_modal_')) {
       const lookup = client.commands.get('lookup');

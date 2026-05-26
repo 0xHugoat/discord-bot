@@ -1,0 +1,371 @@
+const {
+  ActionRowBuilder,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  EmbedBuilder,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+} = require('discord.js');
+
+const TICKET_TYPES = {
+  questions: {
+    label: 'Questions',
+    description: 'Ouvrir un ticket pour poser une question',
+    emoji: '❓',
+  },
+  partenariat: {
+    label: 'Partenariat',
+    description: 'Ouvrir un ticket pour une demande de partenariat',
+    emoji: '🤝',
+  },
+  report: {
+    label: 'Report',
+    description: 'Ouvrir un ticket pour signaler un probleme',
+    emoji: '🚨',
+  },
+  role: {
+    label: 'Obtenir mon role',
+    description: 'Ouvrir un ticket pour demander un role',
+    emoji: '🎭',
+  },
+  autre: {
+    label: 'Autre',
+    description: 'Ouvrir un ticket pour une autre demande',
+    emoji: '📩',
+  },
+};
+
+function buildPanel(staffRole, transcriptChannel) {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('Support tickets')
+    .setDescription('Choisis le type de ticket dont tu as besoin dans le menu ci-dessous.')
+    .addFields(
+      { name: 'Staff', value: `${staffRole}`, inline: true },
+      { name: 'Transcripts', value: `${transcriptChannel}`, inline: true },
+    )
+    .setTimestamp();
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`ticket_type_select:${staffRole.id}:${transcriptChannel.id}`)
+    .setPlaceholder('Choisis un type de ticket...')
+    .addOptions(
+      Object.entries(TICKET_TYPES).map(([value, type]) => ({
+        label: type.label,
+        description: type.description,
+        value,
+        emoji: type.emoji,
+      })),
+    );
+
+  return {
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(menu)],
+  };
+}
+
+function buildTicketControls(claimedById = null) {
+  const claimButton = new ButtonBuilder()
+    .setCustomId('ticket_claim')
+    .setLabel(claimedById ? 'Ticket claim' : 'Claim')
+    .setStyle(claimedById ? ButtonStyle.Secondary : ButtonStyle.Primary)
+    .setDisabled(Boolean(claimedById));
+
+  const closeButton = new ButtonBuilder()
+    .setCustomId('ticket_close')
+    .setLabel('Close')
+    .setStyle(ButtonStyle.Danger);
+
+  return [new ActionRowBuilder().addComponents(claimButton, closeButton)];
+}
+
+function sanitizeChannelName(value) {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40) || 'membre';
+}
+
+function getTicketMeta(channel) {
+  const topic = channel.topic || '';
+  const meta = {};
+
+  for (const part of topic.split(' | ')) {
+    const [key, value] = part.split(':');
+    if (key && value) meta[key] = value;
+  }
+
+  return meta;
+}
+
+function buildTicketTopic(meta) {
+  return [
+    'ticket',
+    `user:${meta.user}`,
+    `type:${meta.type}`,
+    `staff:${meta.staff}`,
+    `logs:${meta.logs}`,
+    meta.claimed ? `claimed:${meta.claimed}` : null,
+  ].filter(Boolean).join(' | ');
+}
+
+function isStaffMember(member, staffRoleId) {
+  return member.roles.cache.has(staffRoleId) || member.permissions.has(PermissionFlagsBits.ManageChannels);
+}
+
+async function fetchAllMessages(channel) {
+  const messages = [];
+  let before;
+
+  while (true) {
+    const batch = await channel.messages.fetch({ limit: 100, before });
+    if (batch.size === 0) break;
+
+    messages.push(...batch.values());
+    before = batch.last().id;
+  }
+
+  return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+}
+
+async function createTranscript(channel, meta, closedBy) {
+  const messages = await fetchAllMessages(channel);
+  const type = TICKET_TYPES[meta.type]?.label || meta.type || 'Inconnu';
+
+  const lines = [
+    `Transcript du ticket: #${channel.name}`,
+    `Type: ${type}`,
+    `Ouvert par: ${meta.user || 'Inconnu'}`,
+    `Claim par: ${meta.claimed || 'Non claim'}`,
+    `Ferme par: ${closedBy.user.tag} (${closedBy.id})`,
+    `Date: ${new Date().toLocaleString('fr-FR')}`,
+    '',
+    'Messages:',
+    '---------',
+  ];
+
+  for (const message of messages) {
+    const attachments = message.attachments.size
+      ? ` | Pieces jointes: ${message.attachments.map(attachment => attachment.url).join(', ')}`
+      : '';
+    const content = message.content || '[embed/fichier/sans texte]';
+    lines.push(`[${message.createdAt.toLocaleString('fr-FR')}] ${message.author.tag}: ${content}${attachments}`);
+  }
+
+  return new AttachmentBuilder(Buffer.from(lines.join('\n'), 'utf8'), {
+    name: `transcript-${channel.name}.txt`,
+  });
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('ticket-panel')
+    .setDescription('Cree un panel de tickets dans ce salon')
+    .addRoleOption(option =>
+      option
+        .setName('staff')
+        .setDescription('Role qui pourra voir, claim et close les tickets')
+        .setRequired(true),
+    )
+    .addChannelOption(option =>
+      option
+        .setName('transcripts')
+        .setDescription('Salon ou envoyer les transcripts')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true),
+    )
+    .addChannelOption(option =>
+      option
+        .setName('categorie')
+        .setDescription('Categorie ou creer les tickets')
+        .addChannelTypes(ChannelType.GuildCategory)
+        .setRequired(false),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+
+  async execute(interaction) {
+    const staffRole = interaction.options.getRole('staff');
+    const transcriptChannel = interaction.options.getChannel('transcripts');
+    const category = interaction.options.getChannel('categorie');
+
+    const panel = buildPanel(staffRole, transcriptChannel);
+    const message = await interaction.channel.send(panel);
+
+    if (category) {
+      const menu = StringSelectMenuBuilder.from(message.components[0].components[0])
+        .setCustomId(`ticket_type_select:${staffRole.id}:${transcriptChannel.id}:${category.id}`);
+      await message.edit({ components: [new ActionRowBuilder().addComponents(menu)] });
+    }
+
+    await interaction.reply({ content: 'Panel de tickets cree dans ce salon.', ephemeral: true });
+  },
+
+  async handleSelect(interaction) {
+    const [, staffRoleId, transcriptChannelId, categoryId] = interaction.customId.split(':');
+    const typeKey = interaction.values[0];
+    const type = TICKET_TYPES[typeKey] || TICKET_TYPES.autre;
+    const guild = interaction.guild;
+    const member = interaction.member;
+
+    const existingTicket = guild.channels.cache.find(channel =>
+      channel.type === ChannelType.GuildText &&
+      channel.topic?.includes('ticket') &&
+      channel.topic?.includes(`user:${interaction.user.id}`),
+    );
+
+    if (existingTicket) {
+      return interaction.reply({
+        content: `Tu as deja un ticket ouvert: ${existingTicket}`,
+        ephemeral: true,
+      });
+    }
+
+    const channelName = `ticket-${typeKey}-${sanitizeChannelName(interaction.user.username)}`;
+    const ticketChannel = await guild.channels.create({
+      name: channelName,
+      type: ChannelType.GuildText,
+      parent: categoryId || interaction.channel.parentId || null,
+      topic: buildTicketTopic({
+        user: interaction.user.id,
+        type: typeKey,
+        staff: staffRoleId,
+        logs: transcriptChannelId,
+      }),
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: interaction.user.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.AttachFiles,
+          ],
+        },
+        {
+          id: staffRoleId,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageMessages,
+          ],
+        },
+        {
+          id: guild.members.me.id,
+          allow: [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.ManageMessages,
+            PermissionFlagsBits.AttachFiles,
+          ],
+        },
+      ],
+    });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x57F287)
+      .setTitle(`${type.emoji} Ticket ${type.label}`)
+      .setDescription(`${interaction.user}, explique ta demande ici. Un membre du staff va te repondre.`)
+      .addFields(
+        { name: 'Type', value: type.label, inline: true },
+        { name: 'Statut', value: 'En attente de claim', inline: true },
+      )
+      .setTimestamp();
+
+    await ticketChannel.send({
+      content: `${interaction.user} <@&${staffRoleId}>`,
+      embeds: [embed],
+      components: buildTicketControls(),
+    });
+
+    await interaction.reply({
+      content: `Ton ticket a ete cree: ${ticketChannel}`,
+      ephemeral: true,
+    });
+  },
+
+  async handleButton(interaction) {
+    const meta = getTicketMeta(interaction.channel);
+
+    if (!meta.user || !meta.staff || !meta.logs) {
+      return interaction.reply({ content: 'Ce salon ne ressemble pas a un ticket valide.', ephemeral: true });
+    }
+
+    const isTicketOwner = interaction.user.id === meta.user;
+    const isStaff = isStaffMember(interaction.member, meta.staff);
+
+    if (interaction.customId === 'ticket_claim') {
+      if (!isStaff) {
+        return interaction.reply({ content: 'Seul le staff peut claim ce ticket.', ephemeral: true });
+      }
+
+      if (meta.claimed) {
+        return interaction.reply({ content: `Ce ticket est deja claim par <@${meta.claimed}>.`, ephemeral: true });
+      }
+
+      const updatedMeta = { ...meta, claimed: interaction.user.id };
+      await interaction.channel.setTopic(buildTicketTopic(updatedMeta));
+
+      const embed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setFields(
+          { name: 'Type', value: TICKET_TYPES[meta.type]?.label || meta.type, inline: true },
+          { name: 'Statut', value: `Claim par ${interaction.user}`, inline: true },
+        );
+
+      await interaction.update({
+        embeds: [embed],
+        components: buildTicketControls(interaction.user.id),
+      });
+
+      await interaction.followUp({ content: `${interaction.user} a claim ce ticket.` });
+      return;
+    }
+
+    if (interaction.customId === 'ticket_close') {
+      if (!isStaff && !isTicketOwner) {
+        return interaction.reply({ content: 'Tu ne peux pas fermer ce ticket.', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+
+      const logsChannel = await interaction.guild.channels.fetch(meta.logs).catch(() => null);
+      const transcript = await createTranscript(interaction.channel, meta, interaction.user);
+      const ticketOwner = await interaction.client.users.fetch(meta.user).catch(() => null);
+      const type = TICKET_TYPES[meta.type]?.label || meta.type || 'Inconnu';
+
+      if (logsChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setColor(0xED4245)
+          .setTitle('Ticket ferme')
+          .addFields(
+            { name: 'Salon', value: `#${interaction.channel.name}`, inline: true },
+            { name: 'Type', value: type, inline: true },
+            { name: 'Ouvert par', value: ticketOwner ? `${ticketOwner.tag} (${ticketOwner.id})` : meta.user, inline: false },
+            { name: 'Claim par', value: meta.claimed ? `<@${meta.claimed}>` : 'Non claim', inline: true },
+            { name: 'Ferme par', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
+          )
+          .setTimestamp();
+
+        await logsChannel.send({ embeds: [logEmbed], files: [transcript] });
+      }
+
+      await interaction.editReply('Ticket ferme. Transcript envoye, suppression du salon dans 5 secondes.');
+      setTimeout(() => {
+        interaction.channel.delete(`Ticket ferme par ${interaction.user.tag}`).catch(() => null);
+      }, 5000);
+    }
+  },
+};
