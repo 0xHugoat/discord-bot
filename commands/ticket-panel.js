@@ -150,7 +150,7 @@ async function createTranscript(channel, meta, closedBy) {
     `Type: ${type}`,
     `Ouvert par: ${meta.user || 'Inconnu'}`,
     `Claim par: ${meta.claimed || 'Non claim'}`,
-    `Ferme par: ${closedBy.user.tag} (${closedBy.id})`,
+    `Ferme par: ${closedBy.tag} (${closedBy.id})`,
     `Date: ${new Date().toLocaleString('fr-FR')}`,
     '',
     'Messages:',
