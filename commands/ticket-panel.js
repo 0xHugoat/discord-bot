@@ -339,14 +339,26 @@ module.exports = {
         return interaction.reply({ content: 'Tu ne peux pas fermer ce ticket.', ephemeral: true });
       }
 
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
 
-      const logsChannel = await interaction.guild.channels.fetch(meta.logs).catch(() => null);
-      const transcript = await createTranscript(interaction.channel, meta, interaction.user);
-      const ticketOwner = await interaction.client.users.fetch(meta.user).catch(() => null);
-      const type = TICKET_TYPES[meta.type]?.label || meta.type || 'Inconnu';
+      try {
+        const logsChannel = await interaction.guild.channels.fetch(meta.logs).catch(() => null);
 
-      if (logsChannel) {
+        if (!logsChannel || logsChannel.type !== ChannelType.GuildText) {
+          return interaction.editReply('Impossible de fermer: le salon transcripts est introuvable.');
+        }
+
+        const botMember = interaction.guild.members.me;
+        const botPermissions = logsChannel.permissionsFor(botMember);
+
+        if (!botPermissions?.has(PermissionFlagsBits.ViewChannel) || !botPermissions?.has(PermissionFlagsBits.SendMessages)) {
+          return interaction.editReply('Impossible de fermer: je n ai pas la permission d envoyer le transcript dans le salon transcripts.');
+        }
+
+        const transcript = await createTranscript(interaction.channel, meta, interaction.user);
+        const ticketOwner = await interaction.client.users.fetch(meta.user).catch(() => null);
+        const type = TICKET_TYPES[meta.type]?.label || meta.type || 'Inconnu';
+
         const logEmbed = new EmbedBuilder()
           .setColor(0xED4245)
           .setTitle('Ticket ferme')
@@ -360,12 +372,15 @@ module.exports = {
           .setTimestamp();
 
         await logsChannel.send({ embeds: [logEmbed], files: [transcript] });
-      }
 
-      await interaction.editReply('Ticket ferme. Transcript envoye, suppression du salon dans 5 secondes.');
-      setTimeout(() => {
-        interaction.channel.delete(`Ticket ferme par ${interaction.user.tag}`).catch(() => null);
-      }, 5000);
+        await interaction.editReply('Ticket ferme. Transcript envoye, suppression du salon dans 5 secondes.');
+        setTimeout(() => {
+          interaction.channel.delete(`Ticket ferme par ${interaction.user.tag}`).catch(() => null);
+        }, 5000);
+      } catch (err) {
+        console.error('Erreur fermeture ticket:', err);
+        await interaction.editReply('Erreur pendant la fermeture du ticket. Verifie mes permissions puis reessaie.');
+      }
     }
   },
 };
