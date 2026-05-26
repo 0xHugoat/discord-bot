@@ -7,7 +7,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
-
+ 
 const SITES = [
   { name: 'Twitter/X', url: 'https://twitter.com/{}' },
   { name: 'Instagram', url: 'https://instagram.com/{}' },
@@ -50,7 +50,7 @@ const SITES = [
   { name: 'Ko-fi', url: 'https://ko-fi.com/{}' },
   { name: 'Linktree', url: 'https://linktr.ee/{}' },
 ];
-
+ 
 async function runSherlock(pseudo) {
   const results = await Promise.all(SITES.map(async site => {
     const url = site.url.replace(/\{\}/g, pseudo);
@@ -78,7 +78,7 @@ async function runSherlock(pseudo) {
     .setTimestamp()
     .setFooter({ text: 'OSINT Lookup' });
 }
-
+ 
 async function runWhois(domain) {
   try {
     const res = await fetch(`https://api.whois.vu/?q=${domain}`);
@@ -93,25 +93,27 @@ async function runWhois(domain) {
     return new EmbedBuilder().setColor(0xFF0000).setDescription('❌ Erreur lors de la recherche Whois.');
   }
 }
-
+ 
 async function runIP(ip) {
   try {
-    const res = await fetch(`https://ipwho.is/${ip}`);
+    const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,regionName,city,zip,isp,org,as,timezone,query&lang=fr`, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
     const data = await res.json();
-    if (!data.success) throw new Error(data.message || 'IP invalide');
+    if (data.status === 'fail') throw new Error(data.message || 'IP invalide');
     return new EmbedBuilder()
       .setColor(0xFFA500)
-      .setTitle(`📍 IP Lookup — ${ip}`)
+      .setTitle(`📍 IP Lookup — ${data.query}`)
       .addFields(
-        { name: '🌍 Pays', value: `${data.flag?.emoji || ''} ${data.country || 'Inconnu'}`, inline: true },
+        { name: '🌍 Pays', value: data.country || 'Inconnu', inline: true },
         { name: '🏙️ Ville', value: data.city || 'Inconnu', inline: true },
-        { name: '📡 FAI', value: data.connection?.isp || 'Inconnu', inline: true },
-        { name: '🗺️ Région', value: data.region || 'Inconnu', inline: true },
-        { name: '🕐 Timezone', value: data.timezone?.id || 'Inconnu', inline: true },
-        { name: '📮 Code postal', value: data.postal || 'Inconnu', inline: true },
-        { name: '🌐 ASN', value: data.connection?.asn ? String(data.connection.asn) : 'Inconnu', inline: true },
-        { name: '🏢 Organisation', value: data.connection?.org || 'Inconnu', inline: true },
-        { name: '📡 Type', value: data.type || 'Inconnu', inline: true },
+        { name: '🗺️ Région', value: data.regionName || 'Inconnu', inline: true },
+        { name: '📡 FAI', value: data.isp || 'Inconnu', inline: true },
+        { name: '🏢 Organisation', value: data.org || 'Inconnu', inline: true },
+        { name: '🌐 AS', value: data.as || 'Inconnu', inline: true },
+        { name: '🕐 Timezone', value: data.timezone || 'Inconnu', inline: true },
+        { name: '📮 Code postal', value: data.zip || 'Inconnu', inline: true },
       )
       .setTimestamp()
       .setFooter({ text: 'OSINT Lookup' });
@@ -119,12 +121,12 @@ async function runIP(ip) {
     return new EmbedBuilder().setColor(0xFF0000).setDescription(`❌ IP invalide ou introuvable : ${err.message}`);
   }
 }
-
+ 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('lookup')
     .setDescription('🔎 Ouvre le panel OSINT'),
-
+ 
   async execute(interaction) {
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
@@ -137,7 +139,7 @@ module.exports = {
       )
       .setTimestamp()
       .setFooter({ text: 'OSINT Lookup • Résultats envoyés en MP' });
-
+ 
     const menu = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('osint_select')
@@ -148,10 +150,10 @@ module.exports = {
           { label: 'IP Lookup', description: 'Localisation d\'une adresse IP', value: 'ip', emoji: '📍' },
         ])
     );
-
+ 
     await interaction.reply({ embeds: [embed], components: [menu] });
   },
-
+ 
   async handleSelect(interaction) {
     const tool = interaction.values[0];
     const modal = new ModalBuilder()
@@ -161,7 +163,7 @@ module.exports = {
         tool === 'whois'    ? '🌐 Whois — Domaine' :
                               '📍 IP Lookup — Adresse IP'
       );
-
+ 
     const input = new TextInputBuilder()
       .setCustomId('osint_input')
       .setLabel(
@@ -171,22 +173,22 @@ module.exports = {
       )
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
-
+ 
     modal.addComponents(new ActionRowBuilder().addComponents(input));
     await interaction.showModal(modal);
   },
-
+ 
   async handleModal(interaction) {
     const tool = interaction.customId.replace('osint_modal_', '');
     const value = interaction.fields.getTextInputValue('osint_input');
-
+ 
     await interaction.reply({ content: '⏳ Recherche en cours... Tu vas recevoir les résultats en MP !', ephemeral: true });
-
+ 
     let embed;
     if (tool === 'sherlock')   embed = await runSherlock(value);
     else if (tool === 'whois') embed = await runWhois(value);
     else if (tool === 'ip')    embed = await runIP(value);
-
+ 
     try {
       await interaction.user.send({ embeds: [embed] });
     } catch {
